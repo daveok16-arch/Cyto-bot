@@ -215,3 +215,80 @@ control showed it was an artifact:
 
 The pattern is the lesson: in this domain, a plausible-looking number is the
 default outcome, and the work is in falsifying it.
+
+## Stage 7: can the premium actually be captured? (real option chains)
+
+Stage 6 established the premium exists *at the index level*. That is necessary,
+not sufficient — capturing it means trading options, which carry their own
+spreads. The historical study had **no cost model at all**, so this stage
+supplies one from real quotes:
+
+- CBOE SPX chain: **29,518 quotes**, 58 expiries, live bid/ask
+- Deribit BTC: 848 two-sided option quotes
+
+A snapshot cannot be a backtest (no outcome to score), but it settles the cost
+question definitively.
+
+### The cost is not the obstacle
+
+| quantity | value |
+|---|---|
+| historical VRP (stage 6) | +4.063 vol points |
+| median straddle round-trip cost | **0.086 vol points** |
+| **premium / cost ratio** | **47x** |
+
+Median SPX straddle spread: **0.67% of mid**. Delta-hedging the underlying costs
+~0.25 bp/day, negligible over a 21-day holding period.
+
+**The cost objection that killed the scalping study does NOT kill this one.** In
+scalping, the round trip (1.70 bp) exceeded the typical move (1.69 bp). Here the
+premium exceeds the cost 47-fold.
+
+### The skew is the real price of the tail
+
+Put IV minus call IV at matched 5% OTM strikes, 21-day expiry:
+
+| | |
+|---|---|
+| OTM put IV | **16.73%** |
+| OTM call IV | **9.51%** |
+| skew | **+7.22 vol points** |
+
+Downside protection is priced *rich* — and that is exactly the cost of insuring
+the short-vol tail. You cannot collect the +4 vol point premium without paying
+for the crash protection if you want to hedge it.
+
+### Defined risk is surprisingly cheap
+
+| | credit | tail |
+|---|---|---|
+| naked ATM put | 75.40 | unlimited to zero |
+| put spread (5% wide) | 59.50 | capped at 320.50 |
+
+The spread retains **79% of the premium** while capping the loss at 320 points.
+
+### BTC is a different market
+
+Deribit BTC: median spread **3.88% of mid**, IV 40.04% → implied round-trip cost
+**~1.55 vol points**, i.e. **~18x more expensive than SPX**. The crypto VRP is
+larger (+13 vol points) but thin liquidity eats much more of it.
+
+### A bug worth recording
+
+The CBOE `delta` field returned an **in-the-money put as "25-delta"**, which
+inverted the skew sign (I first measured −3.47, then +7.22 after fixing).
+Selection now uses **moneyness**, not the delta field, and there's a test for it.
+
+### Verdict
+
+**Cost is NOT the obstacle. Tail risk is.** The remaining obstacles are all
+unmeasured here:
+
+1. The premium is earned *by holding through crises* — the −49.75 vs +0.1245 tail.
+2. VIX is a 30-day constant-maturity index; tradeable straddles have discrete
+   expiries, so the realized window will not match.
+3. Quoted spreads are best-case; size, adverse selection and weekend gaps cost more.
+4. Margin: a naked short-vol book can be called precisely when the premium is best.
+
+That is the honest status: one measured barrier removed, one structural barrier
+standing.

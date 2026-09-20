@@ -1,0 +1,32 @@
+{
+  "spx_hist": {},
+  "spx_capture": {
+    "median_spread_pct": 0.006650041562759626,
+    "median_iv": 13.742513352846004,
+    "median_cost_volpts": 0.08607432153906348,
+    "vrp_volpts": 4.063,
+    "premium_cost_ratio": 47.203392688446236
+  },
+  "hedge_note": "SPX hedge spread ~0.25bp/day; small vs premium",
+  "spx_skew": {
+    "expiry": "2026-10-12",
+    "put_iv_pct": 16.73,
+    "call_iv_pct": 9.51,
+    "skew_volpts": 7.22
+  },
+  "put_spread": {
+    "k_short": 7650.0,
+    "k_long": 7270.0,
+    "credit": 59.50000000000001,
+    "max_loss": 320.5,
+    "short_bid": 75.4,
+    "long_ask": 15.9,
+    "width": 380.0
+  },
+  "btc": {
+    "n": 848,
+    "median_spread_pct": 0.03883495145631058,
+    "median_iv_pct": 40.04,
+    "cost_volpts": 1.5549514563106757
+  }
+}

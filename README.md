@@ -246,10 +246,71 @@ negatively skewed, crisis-clustered losses, and the naive harvest doesn't surviv
 the overlap correction. A real implementation needs actual option strikes (not the
 index), delta-hedging costs, margin, and the ability to survive the −400x drawdown.
 
-## The pattern across six stages
+## Stage 7: can the premium be captured? (real option chains)
+
+Stage 6 proved the premium exists *at the index level*. That's necessary, not
+sufficient — capturing it means trading options, which have their own spreads.
+The historical study had **no cost model at all**. This stage supplies one from
+real quotes:
+
+- **CBOE SPX chain**: 29,518 quotes, 58 expiries, live bid/ask
+- **Deribit BTC**: 848 two-sided option quotes
+
+### Cost is not the obstacle
+
+| quantity | value |
+|---|---|
+| historical VRP (stage 6) | +4.063 vol points |
+| median straddle round-trip cost | **0.086 vol points** |
+| **premium / cost** | **47×** |
+
+Median SPX straddle spread: **0.67% of mid**. Delta-hedging costs ~0.25 bp/day,
+negligible over 21 days. **The cost objection that killed the scalping study does
+not kill this one** — there the round trip (1.70 bp) exceeded the typical move
+(1.69 bp); here the premium exceeds cost 47-fold.
+
+### The skew is the real price of the tail
+
+| | |
+|---|---|
+| OTM put IV (5% below) | **16.73%** |
+| OTM call IV (5% above) | **9.51%** |
+| **skew** | **+7.22 vol points** |
+
+Downside protection is priced rich — that *is* the cost of insuring the short-vol
+tail. You can't collect the premium without either paying for protection or
+wearing the crash risk naked.
+
+### Defined risk looks surprisingly cheap
+
+| structure | credit | tail |
+|---|---|---|
+| naked ATM put | 75.40 | unlimited to zero |
+| put spread (5% wide) | 59.50 | capped at 320.50 |
+
+The spread keeps **79% of the premium** while capping the loss.
+
+### BTC is a much worse market for this
+
+Deribit: median spread **3.88% of mid**, implied round-trip cost **~1.55 vol
+points — 18× worse than SPX**. The crypto premium is bigger (+13 vol points) but
+illiquidity eats far more of it.
+
+### Verdict
+
+**Cost is not the obstacle. Tail risk is.** Remaining obstacles, all unmeasured:
+
+1. The premium is earned *by holding through crises* (−49.75 vs +0.1245 tail).
+2. VIX is a 30-day constant-maturity index; real straddles have discrete expiries.
+3. Quoted spreads are best-case — size, adverse selection, weekend gaps cost more.
+4. Margin: a naked short-vol book gets called precisely when the premium is best.
+
+One measured barrier removed, one structural barrier standing.
+
+## The pattern across seven stages
 
 Every stage produced a number that *looked* like an edge. Every time, a control
-showed it was an artifact:
+showed it was an artifact, a cost, or a tail:
 
 | Stage | Apparent edge | What the control showed |
 |---|---|---|
@@ -258,16 +319,19 @@ showed it was an artifact:
 | Binary bot | positive claimed EV | realized win rate below breakeven |
 | Scalping | best 5m cell +0.08bp | p=0.97 on 110 trades |
 | Volatility | ACF 0.956 persistence | window measuring itself |
-| **VRP** | **t=+43.7** | **overlap; corrected t=+6.52 level, −1.69 harvest** |
+| VRP | t=+43.7 | overlap; +6.52 level, **−1.69 harvest** |
+| **Capture** | **premium/cost 47×** | **skew +7.22 = the tail's price** |
 
-That is the lesson: in this domain a plausible-looking number is the *default*
-outcome, and the work is in falsifying it.
+The lesson: a plausible-looking number is the *default* outcome here. The work is
+in falsifying it.
 
 ## Layout
 
 ```
 src/implied.py       VIX / SPX / DVOL / BTC ingestion, realized-vol alignment
 src/run_vrp.py       variance risk premium study with overlap correction
+src/options.py       real option chain parsing (OSI), straddles, skew, spreads
+src/run_capture.py   capture analysis: premium vs measured trading cost
 src/costs.py         explicit transaction cost model
 src/volatility.py    RV estimators, HAR, QLIKE, Mincer-Zarnowitz
 src/run_vol.py       volatility forecastability + monetization
@@ -275,34 +339,34 @@ src/backtest.py      execution-aware backtest (taker + maker fill models)
 src/scalp_bot.py     direction + magnitude + cost gate
 src/bot.py           binary-option prediction bot
 src/api.py           FastAPI service
-tests/               43 tests, including the overlap and window-artifact guards
+tests/               56 tests, incl. window-artifact, overlap, and skew guards
 AGENTS.md            measured constants, traps, and method requirements
 ```
 
 ## What I will not do
 
-- **I did not report the 0.956 persistence as a finding.** It was a window
-  artifact; I ran the null first.
-- **I did not ship the t=+43.7 VRP as the headline.** Correcting for overlap
-  halved the story's strength and killed the harvest result.
-- **I did not tune gates until a positive appeared.** The p=0.97 scalping cell and
-  p=0.693 vol result are reported as noise.
-- **I did not call the VRP free money.** It is negatively skewed insurance
-  underwriting with a 400x-period tail.
+- **I did not report the 0.956 persistence as a finding.** Window artifact.
+- **I did not ship the t=+43.7 VRP as the headline.** Overlap correction halved it
+  and killed the harvest result.
+- **I did not trust the CBOE delta field.** It inverted the skew; moneyness fixed it.
+- **I did not call the VRP free money.** It is insurance underwriting with a
+  400×-period tail and a +7.22 skew that prices the crash.
+- **I did not turn a snapshot into a backtest.** A live chain has no outcome; it
+  measures cost and nothing else.
 
 ## Where this goes next — as hypotheses, not promises
 
-1. **Implement the VRP with real option chains.** The index-level test says the
-   premium is real. The next step needs actual strikes, delta-hedging costs, and
-   margin modeling — the gap between "the premium exists" and "you can capture it."
-2. **Manage the tail.** The whole business is surviving crashes. Defined-risk
-   structures (put spreads rather than naked short vol) trade premium for
-   survivability — worth measuring rather than assuming.
+1. **Historical option chains.** The one thing that would turn stage 6 from a
+   premium measurement into a P&L backtest. Needs a real options data source
+   (ORATS, CBOE DataShop) — paid, but it's the decisive dataset.
+2. **Tail management, measured.** Put spreads retained 79% of premium with a
+   capped tail. Whether that trade-off beats naked short vol across regimes is
+   testable and untested here.
 3. **Maker economics with rebates.** Still the cleanest structural lever for the
-   directional work, and untested here for want of venue data.
+   directional work, and still untested for want of venue data.
 
-Each could fail. But unlike the first five stages, step 1 now has a measured
-positive to build on.
+Two of the three barriers are now measured rather than assumed. The third — the
+tail — is where the honest work remains.
 
 ## Data integrity
 
