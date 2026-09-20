@@ -1,193 +1,109 @@
-# XAUUSD Short-Horizon Direction Forecasting Experiment
+# XAUUSD Prediction Bot
 
-Does a contention of modern models forecast the next XAUUSD candle direction
-well enough to beat a binary-option payout? **No**, at 1m, 5m, or 15m — and the
-experiments below show exactly where the claim breaks.
-
-Two studies:
-
-1. **1-minute OHLCV** (`src/experiment.py`) — Yahoo `GC=F`, ~26k bars.
-2. **5m/15m tick + order flow** (`src/experiment_flow.py`) — Dukascopy spot
-   XAUUSD ticks, 16M ticks / 55 trading days, July–Sep 2026.
-
----
-
-## Study 1 — 1-minute candle direction (OHLCV)
-
-- Source: Yahoo Finance `GC=F` (COMEX front-month gold), the practical proxy for
-  spot XAUUSD. 1-minute granularity is capped at ~30 days.
-- 25,792 bars, 2026-08-23 to 2026-09-18; 25,690 usable rows.
-- **Features are causal**: every feature at bar `t` uses only data at or before
-  the close of `t`. Label is the direction of bar `t+1`.
-- **Walk-forward, expanding window**: 6 blocks, 50/50 train/test growing forward,
-  5-bar embargo so no label window crosses the boundary.
-
-### Result 1 — the market is close to a martingale
-
-Lag-1 return autocorrelation is **-0.0338** (Ljung-Box(10) = 83.2, p ≈ 1e-13):
-a *tiny* mean-reverting tendency, ~0.1% of variance. Combined with a **47.6%
-up-rate** in this window (a down-drift), that is the only structure visible.
-
-### Result 2 — no model beats the base rate
-
-Out-of-sample, n = 23,516:
-
-| Contender | Accuracy | p vs 50% | Brier | mean p |
-|---|---|---|---|---|
-| base_rate | 0.5245 | 0.0000 | 0.24943 | 0.4803 |
-| mean_rev | 0.5245 | 0.0000 | 0.24946 | 0.4804 |
-| xgboost | 0.5225 | 0.0000 | 0.25139 | 0.4799 |
-| lstm | 0.5181 | 0.0000 | 0.24984 | 0.4778 |
-| transformer | 0.5045 | 0.1729 | 0.25047 | 0.4944 |
-| persistence | 0.4983 | 0.5974 | 0.25267 | 0.4976 |
-| pool (best) | 0.5242 | — | 0.24924 | 0.4848 |
-
-The apparent 52% accuracy is an illusion: the period skewed down (47.6% up), so
-*always predicting down* scores 52.4%. Against a constant base-rate forecast,
-every learned model is **statistically worse** (XGBoost ΔBrier = +0.002,
-t = +4.86, p = 0.000). The Transformer is indistinguishable from a coin flip
-(p = 0.17).
-
-### Result 3 — claimed edge does not survive contact with reality
-
-The pooled model *claimed* +1.1% to +1.9% EV per unit at payouts 0.80–0.90,
-based on its own probabilities — while its realized win rate on those same
-selected bars was 30–50%, **below breakeven at every payout**. That gap is
-miscalibration, and it is how a bot talks you into losing money confidently.
-
----
-
-## Study 2 — 5m / 15m with genuine order flow
-
-The 1-minute study could not test order flow because 1-minute OHLCV has no
-bid/ask and no trade volume. So this study pulls **real tick data**.
-
-- Source: Dukascopy `XAUUSD` hourly tick files (LZMA, 20-byte records: ms offset,
-  ask, bid, ask volume, bid volume). Prices are integers scaled by 1e-3.
-- **16,015,637 ticks, 55 complete trading days**, 2026-07-06 → 2026-09-18.
-  Unlike Yahoo's ~30-day cap, Dukascopy goes back years.
-- Aggregated to 5m and 15m bars; 5m → 13,531 usable rows, 15m → 4,434.
-
-### Order-flow features (the point of this study)
-
-These cannot be computed from candles:
-
-| Feature | What it captures |
-|---|---|
-| `ofi`, `ofi_ma5/15` | signed-volume imbalance (aggressor side via tick rule) |
-| `vol_z`, `n_tick_z` | volume / trade-count intensity vs rolling norm |
-| `spread_bp`, `spread_z` | effective spread — direct liquidity and cost measure |
-| `impact` | absolute move per unit volume (price impact) |
-| `queue_imb` | tick-count asymmetry within the bar |
-| `rv_ofi_corr` | correlation of returns with order-flow imbalance |
-
-Plus the same causal price/candle/volatility features as Study 1, so the two
-arms are directly comparable.
-
-### Result 4 — order flow adds accuracy, but not a statistically real edge
-
-Ablation, identical models and splits, only the feature set differs:
-
-| Horizon | Arm | Best Brier | Accuracy |
-|---|---|---|---|
-| 5m | price only | 0.25020 | 0.4992 |
-| 5m | **+ order flow** | 0.25008 | **0.5062** |
-| 15m | price only | 0.25035 | 0.5043 |
-| 15m | **+ order flow** | 0.25020 | **0.5056** |
-
-So order flow moves accuracy from ~50% to ~50.6% — a real directional
-improvement, and it grows with horizon (49.9% → 50.4% → 50.6%), which is the
-expected shape if signal exists but is small.
-
-**However**, the paired Diebold-Mariano test says the Brier improvement is not
-distinguishable from zero:
-
-| Horizon | ΔE[Brier] | DM stat | p | Block-bootstrap 95% CI |
-|---|---|---|---|---|
-| 5m | +0.000344 | -0.59 | 0.558 | [-0.000852, +0.001513] |
-| 15m | +0.001819 | -1.24 | 0.214 | [-0.000594, +0.004752] |
-
-Both CIs straddle zero. Order flow **sharpens the direction call slightly** but
-does **not** produce a measurable probabilistic edge. The honest reading:
-whatever order flow contributes here is at or below the noise floor.
-
-### Result 5 — XGBoost is significantly *worse* than a constant
-
-At every horizon, the tree model's Brier loss is significantly worse than simply
-predicting the base rate (5m: ΔBrier = +0.005, DM = +7.11, p = 0.000; 15m:
-ΔBrier = +0.011, DM = +6.51, p = 0.000). It is not finding signal; it is
-overfitting noise, and the walk-forward split exposes that. This is the single
-most important methodological result: a leaked backtest would have shown the
-opposite.
-
-### Result 6 — still nowhere near the payout bar
-
-| Payout | Breakeven | Best accuracy (any horizon) | Shortfall |
-|---|---|---|---|
-| 0.80 | 0.5556 | 0.5106 | 4.50 pp |
-| 0.85 | 0.5405 | 0.5106 | 2.99 pp |
-| 0.90 | 0.5263 | 0.5106 | 1.57 pp |
-
-The very best result across 16M ticks and two horizons still fails the bar by
-1.6–4.5 percentage points. At 80% payout, a 51% model loses 8.2% per unit.
-
----
-
-## Verdict
-
-For directional short-horizon XAUUSD binary options, expected value is negative
-and no combination of these models changes that. The structural reasons:
-
-1. **The payout sets a high bar.** 80% payout needs 55.6% to break even; 85%
-   needs 54.1%.
-2. **Signal is tiny but non-zero.** Order flow does add ~0.6pp of directional
-   accuracy, and it grows with horizon — so the researcher's instinct was right.
-   It is simply far too small.
-3. **The vig is larger than the edge.** Even a genuine 51% model loses money at
-   a 90% payout. The edge exists; it just cannot pay the fee.
-4. **Complex models overfit.** XGBoost and the neural nets are significantly
-   worse than a constant under honest walk-forward evaluation.
-5. **Calibration fails where it matters.** The pooled model is most confident
-   where it is most wrong.
-
-## Where the real edge would be
-
-- **Forecast volatility, not direction.** 1-minute realized vol is genuinely
-  predictable; direction is nearly not. The features here (`rv*`, `spread_z`,
-  `vol_z`) would serve a vol model well.
-- **Trade it without the binary wrapper.** A continuous payoff has no embedded
-  ~50% vig to overcome. Even a 51% directional edge can be monetized through a
-  spread-capture or execution-based strategy — with maker rebates, not retail
-  binary payouts.
-- **Go to a real venue.** Order-book imbalance at sub-second scale, with
-  colocation and rebates, is where this signal is actually harvested. Retail
-  binaries interpose a fee larger than the entire phenomenon.
-
-## Data and integrity notes
-
-- Dukascopy path uses **0-indexed months**; XAUUSD prices scale by **1e-3**
-  (verified against `GC=F`: ~4358 spot vs ~4408 futures — a normal basis).
-- Downloads cache **per hour** so a transient 503 never discards good work, and
-  `fill_gaps()` retries missing hours in rounds. All 55 usable days have ≥20 of
-  ~23 trading hours.
-- Gold's daily break is hour 21 UTC, so 23 hours/day is complete, not missing.
-- 55 days is a single regime; magnitudes are indicative, not precise. The
-  conclusion is robust because it rests on the payout table plus an edge that
-  tests as indistinguishable from zero.
-
-## Reproduce
+A prediction bot that forecasts the direction of the next XAUUSD bar and only
+recommends a trade when the probability clears the binary-option breakeven.
 
 ```bash
-python -m src.download_ticks 2026-07-05 2026-09-18   # ~1.5h, resumable
-python -m src.experiment_flow 5min                    # -> results/flow_5min_*.json
-python -m src.analyze_flow 5min                       # significance + payout analysis
-python -m src.experiment_flow 15min
-python -m src.analyze_flow 15min
-python -m src.experiment 1                            # original 1m OHLCV study
-python -m src.analyze
+python -m src.run_bot 5min 0.80     # backtest: fit, replay, report
+python -m uvicorn src.api:app       # serve it: GET /health, POST /predict
+python -m pytest tests/ -q          # 10 tests on the decision gate
 ```
 
-Layout: `src/data.py` (1m OHLCV ingest), `src/ticks.py` (tick ingest + caching),
-`src/features.py` / `src/flow.py` (causal features + splits), `src/contenders.py`
-(model interface), `src/aggregate.py` (log-odds pool), `src/scoring.py` (proper
-scoring rules), `src/experiment*.py`, `src/analyze*.py`.
+## What it does
+
+Given recent bars, the bot answers one question: **P(next bar closes up)** — and
+then refuses to recommend a trade unless that probability beats the payout
+breakeven with margin.
+
+The payout sets the bar. A binary paying 80% on a win needs `1/(1+0.80) = 55.6%`
+just to break even; 85% needs 54.1%. The bot enforces that arithmetic instead of
+trusting the model's enthusiasm.
+
+```
+action: "UP" | "DOWN" | "NO_TRADE"
+edge:   the win-rate margin over breakeven
+reason: why it acted, or why it declined
+```
+
+## What it declined to do
+
+Run against held-out data (5,931 unseen bars), the bot **declined 98.4% of bars**,
+trading only 95. On those 95:
+
+| | |
+|---|---|
+| win rate | 49.5% |
+| breakeven at 80% payout | 55.6% |
+| realized EV per unit staked | **−0.11** |
+
+This is the most useful thing the bot does. When it got confident enough to
+trade, it was *worse* than a coin flip. Extreme confidence in this model is
+anti-predictive, and the gate is what stops that from becoming a losing position.
+
+For comparison, its accuracy across all bars was 51.2% — the same phantom edge
+seen at every stage: slightly better than chance, and far short of the ~56%
+needed to pay the vig.
+
+## How it works
+
+Narrow on purpose. Three contenders, pooled in log-odds, then calibrated:
+
+| Piece | Role |
+|---|---|
+| `base_rate` | constant training up-rate — the anchor and the honesty check |
+| `mean_rev` | bets against the last move (small measured mean reversion) |
+| `xgboost` | gradient-boosted trees on 27 order-flow + price features |
+| pool | log-odds weighted by each contender's holdout Brier skill |
+| calibration | isotonic, fit on a 30% holdout tail never used for weighting |
+
+Features come from tick data via `src/flow.py`: signed-volume imbalance,
+trade-count intensity, effective spread, price impact, queue imbalance, realized
+volatility and its term structure. **Training and serving call the same feature
+function**, which is what prevents training/serving skew.
+
+Data: Dukascopy spot XAUUSD ticks, 16M ticks over 55 trading days
+(Jul 6 – Sep 18 2026), cached per hour so downloads are resumable.
+
+## Layout
+
+```
+src/bot.py         PredictionBot: fit, predict_proba, decide  <- the product
+src/feed.py        dataset loading + MarketFeed replay
+src/run_bot.py     end-to-end backtest CLI
+src/api.py         FastAPI service (/health, /predict)
+src/flow.py        order-flow features, causal by construction
+src/contenders.py  model implementations
+src/aggregate.py   log-odds pooling
+src/scoring.py     Brier, log loss, isotonic calibration
+src/ticks.py       tick download with per-hour caching
+tests/test_bot.py  10 tests, mostly on the decision gate
+```
+
+## API
+
+```bash
+curl -s localhost:8000/health
+curl -s -X POST localhost:8000/predict -H 'Content-Type: application/json' \
+  -d '{"bars":[{...}, ...]}'   # >=65 bars, oldest first
+```
+
+Returns `{"decision": "NO_TRADE", "p_up": 0.5167, "breakeven": 0.5556,
+"edge": -0.0389, "reason": "..."}`. Sending fewer than 65 bars returns 422;
+NaN features (insufficient warm-up) return 422 with an explanation.
+
+## Honest status
+
+**This bot is a correct instrument, not a profitable strategy.** It forecasts
+close to the noise floor, and on the rare occasions it clears its own bar it has
+lost money. That is not a bug to tune away — three studies across 1m, 5m, and 15m
+all landed in the same place: the signal is ~0.6pp, the vig is ~5.6pp.
+
+Where it *is* useful today:
+
+- **As a gate.** It refuses to trade, which is the correct action 98% of the time.
+- **As a harness.** Swap the label to realized volatility (genuinely predictable)
+  or add contenders, and the same fit/pool/calibrate/decide pipeline applies.
+- **As a control.** Any future model should be measured against this one.
+
+The next honest experiment is re-pointing it at volatility. Direction at this
+horizon is a losing game; volatility is not.

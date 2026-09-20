@@ -2,5 +2,7 @@ data/
 results/*.npz
 results/*.log
 results/*.csv
+results/*.json
 __pycache__/
+.pytest_cache/
 *.pyc
