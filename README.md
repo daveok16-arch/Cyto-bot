@@ -92,6 +92,92 @@ symmetric while the spread is charged every round trip.
 | Prediction bot + trade gate | Declined 98.4% of bars; the 95 it took won 49.5%, −11% per unit |
 | Scalping bot + cost gate | Every gate loses at 1m; best 5m cell is p=0.97 noise |
 
+## Stage 5: volatility — where the science gets interesting
+
+Volatility is the one thing here that is genuinely forecastable. It is also where
+I found **two bugs that would each have produced a fake result**, which is the
+most useful part of this stage.
+
+### Trap 1: the persistence that wasn't there
+
+The standard story is "volatility is highly persistent." My first measurement
+agreed: **ACF = 0.956 at lag 1**. Then I checked it against a null.
+
+A rolling-window std of *pure iid noise* has autocorrelation at lag `k` equal to
+the window overlap `(W−k)/W`. The measured ACF tracked that almost exactly:
+
+| lag | measured ACF | window overlap |
+|---|---|---|
+| 1 | +0.956 | 0.933 |
+| 5 | +0.713 | 0.667 |
+| 10 | +0.354 | 0.333 |
+| 15 | +0.019 | 0.000 |
+
+**Non-overlapping blocks: −0.005.** The "96% persistence" was the window
+measuring itself. There's now a test that runs this on iid noise
+(`test_rolling_window_acf_tracks_overlap_fraction`).
+
+### Trap 2: the horizon-scaling bug
+
+`trailing_realized_vol` returns a **one-bar** vol. A 15-bar variance swap needs it
+scaled by `sqrt(15)`. Unscaled, the backtest reported realized²=3181 vs
+strike²=213 — ratio **14.9**, suspiciously equal to the horizon. Scaled correctly,
+the ratio is **0.994**. Left unfixed, this would have shown a variance swap
+printing money.
+
+### What the data actually shows
+
+- Squared returns **do** cluster within the day (Ljung-Box(10) p=4.7e-12).
+- Day-to-day realized vol does **not** persist (autocorr −0.08 over 55 days).
+- The dominant predictable component is **intraday seasonality**: a **4.0×** range
+  from the quietest hour (20 UTC) to the busiest (12 UTC).
+
+Out-of-sample forecastability (overlap-free subsample):
+
+| Model | QLIKE ↓ | vs seasonality |
+|---|---|---|
+| constant | 0.447 | worse (p=0.001) |
+| persistence | 22.8 | far worse |
+| HAR | 0.448 | worse (p=0.001) |
+| **seasonality clock** | 0.274 | — |
+| **XGBoost** | **0.260** | **not significant (p=0.693)** |
+
+XGBoost beats a constant — but does **not** significantly beat a clock that just
+knows what hour it is.
+
+### The control that keeps this honest
+
+I ran the variance-swap monetization with deliberate controls:
+
+| Strategy | captures |
+|---|---|
+| perfect foresight (upper bound) | 100.0% |
+| **XGBoost** | 85.2% |
+| **seasonality only** | **82.8%** |
+| random side | 6.5% |
+
+All the ML machinery adds **2.4 percentage points** over reading the clock.
+
+**And the crucial caveat:** that backtest uses a *naive* strike (recent realized
+vol), not a market price. A real options market already prices in intraday
+seasonality. So a positive number here is **not** evidence of a tradeable edge —
+it cannot be, because this dataset has no option quotes to benchmark against.
+
+## Why I stopped short of claiming success
+
+This is the fifth stage, and the honest pattern is unbroken:
+
+| Stage | Result |
+|---|---|
+| 1m direction | no model beat a constant |
+| 5m/15m + order flow | edge present, **not significant** (p=0.56/0.21) |
+| Binary prediction bot | declined 98.4%; the trades it took lost 11% |
+| Scalping + cost gate | every gate loses at 1m; best 5m cell p=0.97 |
+| **Volatility** | **forecastable — but only via a public clock** |
+
+Each stage produced a number that *looked* like an edge, and each time a control
+showed it was an artifact: base-rate skew, noise, or a window measuring itself.
+
 ## Layout
 
 ```
@@ -99,47 +185,44 @@ src/costs.py         explicit transaction cost model (the heart of it)
 src/scalping.py      market-making quotes + adverse-selection sizing
 src/backtest.py      execution-aware backtest (taker + maker, with fill models)
 src/scalp_bot.py     direction + magnitude + cost gate
+src/volatility.py    RV estimators, HAR, QLIKE, Mincer-Zarnowitz, varswap/straddle PnL
+src/run_vol.py       forecastability + monetization study with artifact controls
 src/run_scalp.py     gate sweep with t-stats and p-values
 src/bot.py           binary-option prediction bot
 src/api.py           FastAPI service
 src/flow.py          order-flow features (causal by construction)
-src/feed.py          dataset loading + MarketFeed replay
-src/ticks.py         Dukascopy tick download, per-hour caching
-tests/               21 tests; costs, engine properties, decision gates
-AGENTS.md            measured constants and method requirements
+tests/               35 tests, including the two artifact guards above
+AGENTS.md            measured constants, traps, and method requirements
 ```
 
 ## What I will not do
 
-You asked me to build a profitable bot and to avoid false hope. Those two are in
-tension, and I chose the second one:
+You asked for a profitable bot and no false hope. Those conflict, and I kept
+choosing the second:
 
-- **I did not tune the gate until a positive number appeared.** The 5m cell at
-  p=0.97 could have been presented as "the bot works." It is noise.
-- **I did not hide the perfect-oracle result.** It is the strongest evidence that
-  the problem is structural, not a matter of a better model.
-- **I did not add complexity for its own sake.** More contenders, deeper nets, and
-  more features were all tried earlier and made things worse (XGBoost is
-  significantly worse than a constant).
+- **I did not report the 0.956 persistence as a finding.** It was a window
+  artifact, and I ran the null before believing it.
+- **I did not ship the variance-swap P&L as profit.** The strike is naive; a real
+  market would price in the seasonality.
+- **I did not tune gates until a positive number appeared.** The p=0.97 scalping
+  cell and the p=0.693 vol result are reported as noise, which is what they are.
+- **I did not hide that ML adds 2.4pp over a clock.**
 
-## Where a real edge could still be
+## Where an edge could still be — as hypotheses, not promises
 
-Honest, and stated as hypothesis rather than promise:
+1. **Volatility risk premium (VRP).** Vol sellers historically earn a premium.
+   Testing it needs **option quotes** (implied vs realized), which this dataset
+   lacks. This is the single most promising untested avenue, and it requires new
+   data rather than a better model.
+2. **Maker economics with rebates.** Flipping the cost sign is the only lever big
+   enough to matter at these horizons. Needs queue-position modeling and venue
+   access.
+3. **Sub-second order-book data with colocation.** Where the microstructure edge
+   is actually harvested.
 
-1. **Predict volatility, not direction.** Realized vol is genuinely forecastable
-   (the `rv*`, `spread_z`, `vol_z` features already exist). Trade it with a
-   continuous payoff — no binary vig, no need to beat the spread on direction.
-2. **Maker economics with rebates.** A maker *earns* the spread rather than paying
-   it. That flips the sign of the cost term, which is the only lever big enough to
-   matter here. It requires queue-position modeling and venue access this dataset
-   cannot provide.
-3. **Go where the phenomenon is harvested.** Sub-second order-book imbalance with
-   colocation. The edge is real at that scale; it is not accessible at 1-5 minute
-   retail granularity.
-
-Any of these could also fail. The point is that they change the *structure* —
-cost sign, payoff shape, or latency — rather than trying to squeeze more accuracy
-out of a signal that is already measured to be too small.
+Each could fail. The point is they change *structure* — the data, the cost sign,
+or the latency — rather than squeezing more accuracy from a signal already
+measured to be too small.
 
 ## Data integrity
 
