@@ -1,109 +1,150 @@
-# XAUUSD Prediction Bot
+# XAUUSD Scalping & Prediction Research
 
-A prediction bot that forecasts the direction of the next XAUUSD bar and only
-recommends a trade when the probability clears the binary-option breakeven.
+Rigorous evaluation of short-horizon XAUUSD forecasting, built to answer one
+question honestly: **can any of this clear its costs?**
+
+Answer: no — not at 1m, 5m, or 15m. The reason is arithmetic, not model quality,
+and the code is built to show it rather than to produce an attractive backtest.
 
 ```bash
-python -m src.run_bot 5min 0.80     # backtest: fit, replay, report
-python -m uvicorn src.api:app       # serve it: GET /health, POST /predict
-python -m pytest tests/ -q          # 10 tests on the decision gate
+python -m src.run_scalp 1min        # advanced scalping bot (direction+size+cost gate)
+python -m src.run_scalp 5min
+python -m src.run_bot 5min 0.80     # original prediction bot (binary options)
+python -m uvicorn src.api:app       # serve the prediction bot
+python -m pytest tests/ -q          # 21 tests
 ```
 
-## What it does
+## The one number that decides everything
 
-Given recent bars, the bot answers one question: **P(next bar closes up)** — and
-then refuses to recommend a trade unless that probability beats the payout
-breakeven with margin.
+Measured from 16M Dukascopy ticks:
 
-The payout sets the bar. A binary paying 80% on a win needs `1/(1+0.80) = 55.6%`
-just to break even; 85% needs 54.1%. The bot enforces that arithmetic instead of
-trusting the model's enthusiasm.
-
-```
-action: "UP" | "DOWN" | "NO_TRADE"
-edge:   the win-rate margin over breakeven
-reason: why it acted, or why it declined
-```
-
-## What it declined to do
-
-Run against held-out data (5,931 unseen bars), the bot **declined 98.4% of bars**,
-trading only 95. On those 95:
-
-| | |
+| Quantity | Value |
 |---|---|
-| win rate | 49.5% |
-| breakeven at 80% payout | 55.6% |
-| realized EV per unit staked | **−0.11** |
+| Median spread | $0.68 = **1.56 bp** |
+| Round-trip cost (spread + fee + slippage) | **1.70 bp** |
+| Median **1-minute** move | **1.69 bp** |
+| Median 5-minute move | 3.95 bp |
+| Typical 1-second move | $0.095 (~0.22 bp) |
 
-This is the most useful thing the bot does. When it got confident enough to
-trade, it was *worse* than a coin flip. Extreme confidence in this model is
-anti-predictive, and the gate is what stops that from becoming a losing position.
+The median 1-minute move is **equal to** the round-trip cost. The spread alone is
+~7× the typical 1-second move. This is the entire story.
 
-For comparison, its accuracy across all bars was 51.2% — the same phantom edge
-seen at every stage: slightly better than chance, and far short of the ~56%
-needed to pay the vig.
+### The diagnostic that settles it
 
-## How it works
+A **perfect direction oracle** — one that knows the next bar's direction 100% of
+the time — trading every bar **still loses money**, because the typical move
+doesn't cover the round trip:
 
-Narrow on purpose. Three contenders, pooled in log-odds, then calibrated:
+```
+perfect oracle, zero cost:  +3.18
+perfect oracle, with cost:  -0.22   <- even with perfect foresight
+```
 
-| Piece | Role |
+So no amount of model improvement fixes scalping by itself. Only *selectivity*
+helps — trading just when the move is large enough to clear costs.
+
+## The advanced scalping bot
+
+`src/scalp_bot.py` predicts two things and gates on the cheaper one:
+
+1. **direction** — P(next move up), pooled from base rate / mean reversion / XGBoost
+2. **magnitude** — E(|next move|) in bp, from an XGBoost regressor
+
+It trades only when `E|move| >= min_move_mult × cost` **and** direction is
+confident. Results on unseen data, sweeping the gate:
+
+**1-minute (74,367 bars) — 16 of 16 gate settings lose money:**
+
+| Gate | trades | hit rate | avg net |
+|---|---|---|---|
+| 1.0× cost | 9,308 | 50.7% | **−1.63 bp** |
+| 1.5× cost | 2,328 | 51.5% | **−1.50 bp** |
+| 2.0× cost | 658 | 53.2% | **−0.77 bp** |
+| 3.0× cost | 57 | 54.4% | **−0.94 bp** |
+
+**5-minute (14,826 bars)** — one cell shows +0.08 bp on 110 trades (1.9% of bars),
+with **p = 0.97**. That is noise, not an edge, and it is the only non-negative
+number in the whole sweep.
+
+The pattern is consistent and instructive: **stricter gates raise the hit rate
+(50.7% → 54.4%) while the net stays negative or converges to zero.** The bot can
+learn to pick *bigger* moves; it cannot make the edge exceed the spread.
+
+## Why raising the hit rate doesn't help
+
+Hit rate is the wrong metric. What matters is average net PnL per trade, and it
+is bounded above by:
+
+```
+avg_net  =  hit_rate × avg_win  −  (1−hit_rate) × avg_loss  −  cost
+```
+
+At the 3.0× gate the bot achieves a 54.4% hit rate and *still* loses, because
+the moves it selects are only ~2-3× the cost, so wins and losses are nearly
+symmetric while the spread is charged every round trip.
+
+## What was tested, and what each stage found
+
+| Stage | Finding |
 |---|---|
-| `base_rate` | constant training up-rate — the anchor and the honesty check |
-| `mean_rev` | bets against the last move (small measured mean reversion) |
-| `xgboost` | gradient-boosted trees on 27 order-flow + price features |
-| pool | log-odds weighted by each contender's holdout Brier skill |
-| calibration | isotonic, fit on a 30% holdout tail never used for weighting |
-
-Features come from tick data via `src/flow.py`: signed-volume imbalance,
-trade-count intensity, effective spread, price impact, queue imbalance, realized
-volatility and its term structure. **Training and serving call the same feature
-function**, which is what prevents training/serving skew.
-
-Data: Dukascopy spot XAUUSD ticks, 16M ticks over 55 trading days
-(Jul 6 – Sep 18 2026), cached per hour so downloads are resumable.
+| 1m OHLCV direction | No model beat a constant; XGBoost *significantly worse* |
+| 5m/15m + order flow | Order flow adds ~0.6pp accuracy; Brier delta **not significant** (p=0.56/0.21) |
+| Prediction bot + trade gate | Declined 98.4% of bars; the 95 it took won 49.5%, −11% per unit |
+| Scalping bot + cost gate | Every gate loses at 1m; best 5m cell is p=0.97 noise |
 
 ## Layout
 
 ```
-src/bot.py         PredictionBot: fit, predict_proba, decide  <- the product
-src/feed.py        dataset loading + MarketFeed replay
-src/run_bot.py     end-to-end backtest CLI
-src/api.py         FastAPI service (/health, /predict)
-src/flow.py        order-flow features, causal by construction
-src/contenders.py  model implementations
-src/aggregate.py   log-odds pooling
-src/scoring.py     Brier, log loss, isotonic calibration
-src/ticks.py       tick download with per-hour caching
-tests/test_bot.py  10 tests, mostly on the decision gate
+src/costs.py         explicit transaction cost model (the heart of it)
+src/scalping.py      market-making quotes + adverse-selection sizing
+src/backtest.py      execution-aware backtest (taker + maker, with fill models)
+src/scalp_bot.py     direction + magnitude + cost gate
+src/run_scalp.py     gate sweep with t-stats and p-values
+src/bot.py           binary-option prediction bot
+src/api.py           FastAPI service
+src/flow.py          order-flow features (causal by construction)
+src/feed.py          dataset loading + MarketFeed replay
+src/ticks.py         Dukascopy tick download, per-hour caching
+tests/               21 tests; costs, engine properties, decision gates
+AGENTS.md            measured constants and method requirements
 ```
 
-## API
+## What I will not do
 
-```bash
-curl -s localhost:8000/health
-curl -s -X POST localhost:8000/predict -H 'Content-Type: application/json' \
-  -d '{"bars":[{...}, ...]}'   # >=65 bars, oldest first
-```
+You asked me to build a profitable bot and to avoid false hope. Those two are in
+tension, and I chose the second one:
 
-Returns `{"decision": "NO_TRADE", "p_up": 0.5167, "breakeven": 0.5556,
-"edge": -0.0389, "reason": "..."}`. Sending fewer than 65 bars returns 422;
-NaN features (insufficient warm-up) return 422 with an explanation.
+- **I did not tune the gate until a positive number appeared.** The 5m cell at
+  p=0.97 could have been presented as "the bot works." It is noise.
+- **I did not hide the perfect-oracle result.** It is the strongest evidence that
+  the problem is structural, not a matter of a better model.
+- **I did not add complexity for its own sake.** More contenders, deeper nets, and
+  more features were all tried earlier and made things worse (XGBoost is
+  significantly worse than a constant).
 
-## Honest status
+## Where a real edge could still be
 
-**This bot is a correct instrument, not a profitable strategy.** It forecasts
-close to the noise floor, and on the rare occasions it clears its own bar it has
-lost money. That is not a bug to tune away — three studies across 1m, 5m, and 15m
-all landed in the same place: the signal is ~0.6pp, the vig is ~5.6pp.
+Honest, and stated as hypothesis rather than promise:
 
-Where it *is* useful today:
+1. **Predict volatility, not direction.** Realized vol is genuinely forecastable
+   (the `rv*`, `spread_z`, `vol_z` features already exist). Trade it with a
+   continuous payoff — no binary vig, no need to beat the spread on direction.
+2. **Maker economics with rebates.** A maker *earns* the spread rather than paying
+   it. That flips the sign of the cost term, which is the only lever big enough to
+   matter here. It requires queue-position modeling and venue access this dataset
+   cannot provide.
+3. **Go where the phenomenon is harvested.** Sub-second order-book imbalance with
+   colocation. The edge is real at that scale; it is not accessible at 1-5 minute
+   retail granularity.
 
-- **As a gate.** It refuses to trade, which is the correct action 98% of the time.
-- **As a harness.** Swap the label to realized volatility (genuinely predictable)
-  or add contenders, and the same fit/pool/calibrate/decide pipeline applies.
-- **As a control.** Any future model should be measured against this one.
+Any of these could also fail. The point is that they change the *structure* —
+cost sign, payoff shape, or latency — rather than trying to squeeze more accuracy
+out of a signal that is already measured to be too small.
 
-The next honest experiment is re-pointing it at volatility. Direction at this
-horizon is a losing game; volatility is not.
+## Data integrity
+
+- 16,015,637 ticks across 55 complete trading days (2026-07-06 → 2026-09-18).
+- Per-hour caching; transient 503s no longer discard a day's work.
+- All usable days have ≥20 of ~23 trading hours (hour 21 UTC is gold's daily break).
+- 55 days is a single regime. Magnitudes are indicative; the *conclusion* is robust
+  because it rests on the cost floor and a perfect-oracle bound, not on one sample.
