@@ -178,51 +178,131 @@ This is the fifth stage, and the honest pattern is unbroken:
 Each stage produced a number that *looked* like an edge, and each time a control
 showed it was an artifact: base-rate skew, noise, or a window measuring itself.
 
+## Stage 6: the variance risk premium — the first real positive
+
+Every earlier stage tried to **beat** the market using price data. This one asks
+whether the market **pays** you to bear risk. That needs implied volatility — the
+price of vol — which means option data:
+
+- **VIX**: 30-day S&P 500 implied vol, daily since **1990** (9,276 points)
+- **DVOL**: Deribit's BTC implied vol, ~1,000 points (independent cross-check)
+
+### The premium exists
+
+Implied minus subsequently realized vol, 1990–2026:
+
+| | |
+|---|---|
+| mean premium | **+4.06 vol points** |
+| fraction positive | **81.7%** |
+| mean VIX vs mean realized | 19.44 vs 15.39 |
+
+### The correction that changes the conclusion
+
+A 21-day realized vol computed daily overlaps its neighbour by 20/21. The 9,200
+rows are **not** independent, and the naive t-stat was inflated by ~`sqrt(21)`:
+
+| | naive | corrected |
+|---|---|---|
+| **VRP level** | t = +43.73 | **t = +6.52** |
+| **short-variance P&L** | t = +5.48 | **t = −1.69** |
+
+**This is the crux.** The premium is real and highly significant. The *harvest* is
+not — it goes from a Sharpe-0.91 winner to indistinguishable from zero. There's a
+regression test asserting overlap inflates the t-stat, so this can't be dropped.
+
+### The tail is the whole story
+
+```
+worst single period   -49.75
+average gain           +0.1245
+ratio                 400x
+skew                  -13.96
+```
+
+One crisis erases ~400 periods of ordinary income. All five worst periods are
+February–March 2020. You win 81.7% of the time and lose catastrophically in the
+tail — precisely what a risk premium should look like.
+
+### By decade
+
+| decade | mean | t |
+|---|---|---|
+| 1990s | +0.4306 | +43.62 |
+| 2000s | +0.0715 | +2.44 |
+| 2010s | +0.1770 | +8.54 |
+| 2020s | −0.3347 | −3.01 |
+
+The 2020s negative is COVID, not a regime change: **ex-2020, the mean is +0.2312**.
+The premium is stable across three decades and independent of forecasting skill.
+
+### Verdict
+
+**The first positive result in this project that is not an artifact.** You are paid
+to bear risk, not to out-predict anyone.
+
+**But it is not free money.** It is a short-volatility insurance business:
+negatively skewed, crisis-clustered losses, and the naive harvest doesn't survive
+the overlap correction. A real implementation needs actual option strikes (not the
+index), delta-hedging costs, margin, and the ability to survive the −400x drawdown.
+
+## The pattern across six stages
+
+Every stage produced a number that *looked* like an edge. Every time, a control
+showed it was an artifact:
+
+| Stage | Apparent edge | What the control showed |
+|---|---|---|
+| 1m direction | 52.4% accuracy | base-rate skew (47.6% up-drift) |
+| 5m/15m order flow | +0.6pp accuracy | Brier delta p=0.56/0.21 |
+| Binary bot | positive claimed EV | realized win rate below breakeven |
+| Scalping | best 5m cell +0.08bp | p=0.97 on 110 trades |
+| Volatility | ACF 0.956 persistence | window measuring itself |
+| **VRP** | **t=+43.7** | **overlap; corrected t=+6.52 level, −1.69 harvest** |
+
+That is the lesson: in this domain a plausible-looking number is the *default*
+outcome, and the work is in falsifying it.
+
 ## Layout
 
 ```
-src/costs.py         explicit transaction cost model (the heart of it)
-src/scalping.py      market-making quotes + adverse-selection sizing
-src/backtest.py      execution-aware backtest (taker + maker, with fill models)
+src/implied.py       VIX / SPX / DVOL / BTC ingestion, realized-vol alignment
+src/run_vrp.py       variance risk premium study with overlap correction
+src/costs.py         explicit transaction cost model
+src/volatility.py    RV estimators, HAR, QLIKE, Mincer-Zarnowitz
+src/run_vol.py       volatility forecastability + monetization
+src/backtest.py      execution-aware backtest (taker + maker fill models)
 src/scalp_bot.py     direction + magnitude + cost gate
-src/volatility.py    RV estimators, HAR, QLIKE, Mincer-Zarnowitz, varswap/straddle PnL
-src/run_vol.py       forecastability + monetization study with artifact controls
-src/run_scalp.py     gate sweep with t-stats and p-values
 src/bot.py           binary-option prediction bot
 src/api.py           FastAPI service
-src/flow.py          order-flow features (causal by construction)
-tests/               35 tests, including the two artifact guards above
+tests/               43 tests, including the overlap and window-artifact guards
 AGENTS.md            measured constants, traps, and method requirements
 ```
 
 ## What I will not do
 
-You asked for a profitable bot and no false hope. Those conflict, and I kept
-choosing the second:
-
 - **I did not report the 0.956 persistence as a finding.** It was a window
-  artifact, and I ran the null before believing it.
-- **I did not ship the variance-swap P&L as profit.** The strike is naive; a real
-  market would price in the seasonality.
-- **I did not tune gates until a positive number appeared.** The p=0.97 scalping
-  cell and the p=0.693 vol result are reported as noise, which is what they are.
-- **I did not hide that ML adds 2.4pp over a clock.**
+  artifact; I ran the null first.
+- **I did not ship the t=+43.7 VRP as the headline.** Correcting for overlap
+  halved the story's strength and killed the harvest result.
+- **I did not tune gates until a positive appeared.** The p=0.97 scalping cell and
+  p=0.693 vol result are reported as noise.
+- **I did not call the VRP free money.** It is negatively skewed insurance
+  underwriting with a 400x-period tail.
 
-## Where an edge could still be — as hypotheses, not promises
+## Where this goes next — as hypotheses, not promises
 
-1. **Volatility risk premium (VRP).** Vol sellers historically earn a premium.
-   Testing it needs **option quotes** (implied vs realized), which this dataset
-   lacks. This is the single most promising untested avenue, and it requires new
-   data rather than a better model.
-2. **Maker economics with rebates.** Flipping the cost sign is the only lever big
-   enough to matter at these horizons. Needs queue-position modeling and venue
-   access.
-3. **Sub-second order-book data with colocation.** Where the microstructure edge
-   is actually harvested.
+1. **Implement the VRP with real option chains.** The index-level test says the
+   premium is real. The next step needs actual strikes, delta-hedging costs, and
+   margin modeling — the gap between "the premium exists" and "you can capture it."
+2. **Manage the tail.** The whole business is surviving crashes. Defined-risk
+   structures (put spreads rather than naked short vol) trade premium for
+   survivability — worth measuring rather than assuming.
+3. **Maker economics with rebates.** Still the cleanest structural lever for the
+   directional work, and untested here for want of venue data.
 
-Each could fail. The point is they change *structure* — the data, the cost sign,
-or the latency — rather than squeezing more accuracy from a signal already
-measured to be too small.
+Each could fail. But unlike the first five stages, step 1 now has a measured
+positive to build on.
 
 ## Data integrity
 

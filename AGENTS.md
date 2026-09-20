@@ -110,3 +110,108 @@ measure because it contains no option quotes.
 
 Do not add complexity expecting profitability. The measured structure is a clock,
 and clocks are public information.
+
+## Stage 6: the variance risk premium — the first genuine positive result
+
+Every earlier stage tried to beat the market using price data. This one measures
+whether the market *pays* you to bear risk. It uses implied volatility (the price
+of vol), which needs option data:
+
+- **VIX** — 30-day implied vol on the S&P 500, daily since **1990** (9,276 points)
+- **DVOL** — Deribit's BTC implied vol index, ~1,000 daily points (cross-check)
+
+### The premium is real
+
+Implied vol minus subsequently realized vol, 1990–2026:
+
+| | |
+|---|---|
+| mean premium | **+4.06 vol points** |
+| median | +4.69 |
+| fraction positive | **81.7%** |
+| mean VIX vs mean realized | 19.44 vs 15.39 |
+
+### But the naive t-stat is inflated — and I corrected it
+
+21-day realized vol computed daily shares 20 of 21 days with its neighbour, so the
+9,200 rows are **not** independent. The naive t-stat was inflated by roughly
+`sqrt(21)`:
+
+| | naive (overlapping) | corrected (non-overlapping) |
+|---|---|---|
+| VRP level | t = **+43.73** | t = **+6.52** (n=419) |
+| short-variance P&L | t = **+5.48** | t = **−1.69** (n=419) |
+
+**This is the crux.** The *premium* survives correction and stays highly
+significant. The *harvest* does not — it goes from looking like a Sharpe 0.91
+winner to statistically indistinguishable from zero.
+
+There's a test asserting overlap inflates the t-stat, so this correction can't be
+silently dropped.
+
+### The tail is the story
+
+```
+worst single period   -49.75 (as a fraction of variance notional)
+average gain           +0.1245
+ratio                 400x
+skew                  -13.96
+```
+
+One crisis erases ~400 periods of ordinary income. The five worst periods are all
+February–March 2020 (COVID). You win 81.7% of the time and lose catastrophically
+in the tail — which is exactly what a risk premium *should* look like.
+
+### By decade
+
+| decade | mean | t |
+|---|---|---|
+| 1990s | +0.4306 | +43.62 |
+| 2000s | +0.0715 | +2.44 |
+| 2010s | +0.1770 | +8.54 |
+| 2020s | **−0.3347** | −3.01 |
+
+And removing crises: excluding 2008+2020 leaves mean +0.2774 (t=+32.61).
+
+### The 2020s negative is COVID, not a regime change
+
+| window | n | mean | t |
+|---|---|---|---|
+| 2020s all | 1666 | −0.3347 | −3.01 |
+| 2020s ex-2020 | 1413 | **+0.2312** | +9.15 |
+| 2021 onwards | 1413 | +0.2312 | +9.15 |
+
+Strip out the COVID crash and the premium returns. But note that by 2021–2026 the
+naive t-stats are again overlapping (t=+9.15 is not the honest number).
+
+### Verdict
+
+**This is the first positive result in the project that is not an artifact.** The
+variance risk premium exists, is stable across three decades, and is independent
+of any forecasting skill — you are paid to bear risk, not to out-predict anyone.
+
+**But it is not free money:**
+- returns are severely negatively skewed every way I measured it
+- the losses cluster in crashes, precisely when margin calls arrive
+- the naive harvest is *not* significant once overlap is corrected
+- a real implementation needs option quotes (for actual strikes), delta-hedging
+  costs, margin, and the ability to survive the −400x-period drawdown
+- it is a *short-volatility* business: you are selling insurance, and the
+  catastrophic scenario is the one you must plan for
+
+## Why this project took six stages to find one honest positive
+
+Every earlier stage produced a number that *looked* like an edge, and every time a
+control showed it was an artifact:
+
+| Stage | Apparent edge | What the control showed |
+|---|---|---|
+| 1m direction | 52.4% accuracy | base-rate skew (47.6% up-drift) |
+| 5m/15m order flow | +0.6pp accuracy | Brier delta p=0.56/0.21 |
+| Binary bot | positive claimed EV | realized win rate below breakeven |
+| Scalping | best 5m cell +0.08bp | p=0.97, 110 trades |
+| Volatility | ACF 0.956 persistence | window measuring itself |
+| **VRP** | **t=+43.7** | **overlap; corrected t=+6.52 for the level, −1.69 for the harvest** |
+
+The pattern is the lesson: in this domain, a plausible-looking number is the
+default outcome, and the work is in falsifying it.
