@@ -74,33 +74,34 @@ class Persistence(Contender):
 
     name = "persistence"
 
+    def __init__(self, sign_col: int = 0):
+        self.sign_col = sign_col
+
     def fit(self, X, y, Xtest=None):
-        self.ret_col_ = 0  # 'ret1' is engineered as column 0
         return self
 
     def predict_proba(self, X, Xseq=None):
-        return np.where(X[:, 0] > 0, 0.55, 0.45)
+        return np.where(X[:, self.sign_col] > 0, 0.55, 0.45)
 
 
 class MeanReversion(Contender):
-    """Bets against the last move. Motivated by the measured negative lag-1
+    """Bets against the last move. Motivated by measured negative lag-1
     autocorrelation rather than by candle-pattern folklore."""
 
     name = "mean_rev"
 
-    def __init__(self, strength: float = 0.55):
-        self.strength = strength
+    def __init__(self, sign_col: int = 0):
+        self.sign_col = sign_col
 
     def fit(self, X, y, Xtest=None):
-        # calibrate the bet size to the training-set up-rate after a down bar
-        up = (X[:, 0] > 0)
-        p_up_after_up = y[up].mean() if up.any() else 0.5
-        p_up_after_dn = y[~up].mean() if (~up).any() else 0.5
-        self.p_up_, self.p_dn_ = float(p_up_after_up), float(p_up_after_dn)
+        # calibrate the conditional up-rate on the training set
+        up = (X[:, self.sign_col] > 0)
+        self.p_up_ = float(y[up].mean()) if up.any() else 0.5
+        self.p_dn_ = float(y[~up].mean()) if (~up).any() else 0.5
         return self
 
     def predict_proba(self, X, Xseq=None):
-        return np.where(X[:, 0] > 0, self.p_up_, self.p_dn_)
+        return np.where(X[:, self.sign_col] > 0, self.p_up_, self.p_dn_)
 
 
 class _KerasSeq(Contender):
