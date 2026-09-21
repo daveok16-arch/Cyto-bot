@@ -1,0 +1,112 @@
+name: XAUUSD signal bot
+
+# Runs on a schedule in GitHub's cloud. No server, no always-on process.
+# Each run is stateless: fetch -> retrain -> predict -> notify -> exit.
+#
+# NOTE ON SCHEDULES: GitHub's cron is best-effort and can be delayed by several
+# minutes under load, and is disabled automatically after 60 days of repository
+# inactivity. A signal at a precise bar close is therefore not guaranteed. If
+# timing matters, run the same command on Cloud Run / a cron VM instead.
+
+on:
+  schedule:
+    # every 15 minutes during London+NY gold hours (07:00-21:00 UTC), Mon-Fri
+    - cron: "*/15 7-21 * * 1-5"
+    # one heartbeat each morning so a silent failure is visible
+    - cron: "5 7 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print instead of sending to Telegram"
+        type: boolean
+        default: false
+      heartbeat:
+        description: "Also send a short alive message"
+        type: boolean
+        default: false
+
+concurrency:
+  group: signal-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pandas scikit-learn xgboost scipy
+
+      - name: Heartbeat detection
+        id: mode
+        run: |
+          # the 07:05 UTC cron is the heartbeat; scheduled events have no inputs
+          if [ "${{ github.event.schedule }}" = "5 7 * * 1-5" ]; then
+            echo "flags=--heartbeat" >> "$GITHUB_OUTPUT"
+          else
+            echo "flags=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run one signal cycle
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SIGNAL_SYMBOL: ${{ vars.SIGNAL_SYMBOL || 'GC=F' }}
+          SIGNAL_BAR: ${{ vars.SIGNAL_BAR || '5min' }}
+          SIGNAL_HISTORY: ${{ vars.SIGNAL_HISTORY || '5d' }}
+          SIGNAL_PAYOUT: ${{ vars.SIGNAL_PAYOUT || '0.80' }}
+        run: |
+          set -o pipefail
+          FLAGS="${{ steps.mode.outputs.flags }}"
+          if [ "${{ inputs.heartbeat }}" = "true" ]; then FLAGS="--heartbeat"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python -m src.cloud_run $FLAGS --dry-run
+          else
+            python -m src.cloud_run $FLAGS
+          fi
+
+      - name: Upload signal log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signals-${{ github.run_id }}
+          path: results/signals.jsonl
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os, urllib.parse, urllib.request
+          t = os.environ.get("TELEGRAM_BOT_TOKEN")
+          c = os.environ.get("TELEGRAM_CHAT_ID")
+          if not (t and c):
+              print("no telegram secrets; skipping failure notice")
+              raise SystemExit(0)
+          msg = ("<b>Signal bot FAILED</b>\n"
+                 "run: https://github.com/%s/actions/runs/%s" %
+                 (os.environ.get("GITHUB_REPOSITORY", "?"),
+                  os.environ.get("GITHUB_RUN_ID", "?")))
+          data = urllib.parse.urlencode({"chat_id": c, "text": msg,
+                                         "parse_mode": "HTML"}).encode()
+          urllib.request.urlopen(urllib.request.Request(
+              f"https://api.telegram.org/bot{t}/sendMessage", data=data),
+              timeout=20).read()
+          print("failure notice sent")
+          PY
