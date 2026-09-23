@@ -5,3 +5,4 @@ results/*.csv
 __pycache__/
 .pytest_cache/
 *.pyc
+results/*.jsonl
